@@ -1,0 +1,7 @@
+classes/
+build/
+data/
+*.log
+*.snap
+*.jar
+.DS_Store
