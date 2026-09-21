@@ -243,7 +243,7 @@ public final class App {
 
     // ---------- handlers ----------
 
-    static Reply shortenOne(Store st, J.Obj p) {
+    static Reply shortenOne(StoreApi st, J.Obj p) {
         J u = p.find("url");
         if (!(u instanceof J.Str us) || !isValidUrl(us.v())) return bad("invalid url");
         String alias = null;
@@ -272,7 +272,7 @@ public final class App {
         return true;
     }
 
-    static Reply bulkReply(Store st, List<String> us) {
+    static Reply bulkReply(StoreApi st, List<String> us) {
         List<String> codes = st.shortenMany(us, linkTtlMs());
         StringBuilder b = new StringBuilder(codes.size() * 10 + 24);
         b.append("{\"count\":").append(codes.size()).append(",\"codes\":[");
@@ -284,7 +284,7 @@ public final class App {
         return mk(201, b.toString());
     }
 
-    static Reply shortenBulk(Store st, J.Obj p) {
+    static Reply shortenBulk(StoreApi st, J.Obj p) {
         String msg = "urls must be 1-" + MAX_BULK_URLS + " valid http(s) urls";
         if (!(p.find("urls") instanceof J.Arr urls) || urls.items().isEmpty()
             || urls.items().size() > MAX_BULK_URLS) return bad(msg);
@@ -339,7 +339,7 @@ public final class App {
 
     // ---------- handler ----------
 
-    public static Reply handle(Store st, String method, String path,
+    public static Reply handle(StoreApi st, String method, String path,
                                String body, String adminToken) {
         int qi = path.indexOf('?');
         String pathname = qi < 0 ? path : path.substring(0, qi);

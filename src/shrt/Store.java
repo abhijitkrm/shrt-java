@@ -21,7 +21,7 @@ import java.util.stream.Stream;
  *    page cache), fsync every FSYNC_MS (<=500ms durable)
  *  - reads: CHM get + atomic hit increments; sibling logs tailed lazily on miss
  */
-public final class Store {
+public final class Store implements StoreApi {
     static final int FLUSH_MS = 5, FSYNC_MS = 500, TAIL_MIN_INTERVAL = 200;
     static final long FLUSH_BYTES = 256 << 10;
     static final int CODE_LEN = 8, MAX_INSTANCES = 62, MAX_STRAY_HITS = 10_000;

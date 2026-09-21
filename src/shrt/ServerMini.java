@@ -51,7 +51,7 @@ public final class ServerMini {
     }
 
     /** One connection: read batches -> process all complete requests -> one write. */
-    static void connLoop(Socket s, Store st, String corsOrigin) throws IOException {
+    static void connLoop(Socket s, StoreApi st, String corsOrigin) throws IOException {
         s.setTcpNoDelay(true);
         InputStream in = s.getInputStream();
         OutputStream sout = s.getOutputStream();
@@ -147,7 +147,7 @@ public final class ServerMini {
     }
 
     /** Accept loop on an already-bound socket. */
-    public static void serve(ServerSocket ss, Store st, String corsOrigin) throws IOException {
+    public static void serve(ServerSocket ss, StoreApi st, String corsOrigin) throws IOException {
         ExecutorService pool = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r);
             t.setDaemon(true);

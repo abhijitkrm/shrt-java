@@ -39,7 +39,7 @@ public final class Main {
     /** Bulk-insert N links if the store is empty (through the write path). */
     static void seed(int n) {
         try {
-            Store s = Store.open(dataDir(), 0);
+            StoreApi s = StoreApi.openEnv(dataDir(), 0);
             if (s.isEmpty()) {
                 List<String> urls = new ArrayList<>(n);
                 for (int i = 0; i < n; i++) urls.add("https://example.com/" + i);
@@ -78,9 +78,9 @@ public final class Main {
     }
 
     static void serve() throws IOException {
-        Store st;
+        StoreApi st;
         try {
-            st = Store.open(dataDir(), envInt("INSTANCE", -1));
+            st = StoreApi.openEnv(dataDir(), envInt("INSTANCE", -1));
         } catch (IOException e) {
             System.err.println(e.getMessage());
             System.exit(1);

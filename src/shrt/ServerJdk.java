@@ -10,7 +10,7 @@ import java.util.concurrent.Executors;
 
 /** JDK built-in HttpServer frontend (`SERVER=jdk`) — the fallback. */
 public final class ServerJdk {
-    public static void serve(int port, Store st, String corsOrigin) throws IOException {
+    public static void serve(int port, StoreApi st, String corsOrigin) throws IOException {
         HttpServer srv = HttpServer.create(new InetSocketAddress(port), 0);
         srv.setExecutor(Executors.newCachedThreadPool());
         srv.createContext("/", ex -> {

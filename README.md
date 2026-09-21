@@ -60,6 +60,15 @@ SERVER=jdk java -cp classes shrt.Main  # JDK HttpServer frontend
 · `INSTANCE` (auto) · `SEED` (pre-generate N links at boot) · `HITS` (`1`)
 · `TAIL_MS` (0) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
 · `LINK_TTL_MS` (86400000, default AND cap)
+· `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `CACHE` (100000, bounded hot FIFO entries) · `CACHE_TTL_MS` (5000)
+
+`STORE=dragonfly` moves the whole corpus to an external RESP store
+(DragonflyDB / Redis): keys `l:{code}` → `{exp}|{created}|{url}` (PX
+self-evicts TTLs), `h:{code}` → hit counter (batched `INCRBY` every 5 ms).
+Each node keeps only a bounded FIFO cache — memory stays flat as links
+grow; a cold redirect costs one `GET`. No tailing — admin mutations work on
+any node. Live tests: `SHRT_KV_ADDR=127.0.0.1:6379 java -cp classes shrt.TestMain`.
 
 ## Bench
 
