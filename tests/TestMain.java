@@ -5,6 +5,7 @@ public final class TestMain {
         StoreTests.register();
         ApiTests.register();
         KvTests.register();
+        RocksTests.register();
         System.exit(T.run());
     }
 }

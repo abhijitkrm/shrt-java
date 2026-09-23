@@ -60,7 +60,9 @@ SERVER=jdk java -cp classes shrt.Main  # JDK HttpServer frontend
 · `INSTANCE` (auto) · `SEED` (pre-generate N links at boot) · `HITS` (`1`)
 · `TAIL_MS` (0) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
 · `LINK_TTL_MS` (86400000, default AND cap)
-· `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `STORE` (`aof`|`dragonfly`|`redis`|`rocksdb`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
+· `ROCKSDB_PATH` (`{DATA_DIR}/rocks`) — embedded RocksDB dir; needs
+  `lib/rocksdbjni-*.jar` (Makefile fetches it from Maven automatically)
 · `CACHE` (100000, bounded hot FIFO entries) · `CACHE_TTL_MS` (5000)
 `KV_LAYOUT` (`key`|`hash`) packs links as hash fields in `l:{code % KV_BUCKETS}` (~40% less KV memory); expiry via read-check + `KV_SWEEP_MS` janitor (1h). Server needs `hash-max-listpack-value` >= ~256 for full savings.
 
@@ -71,6 +73,15 @@ self-evicts TTLs), `h:{code}` → hit counter (batched `INCRBY` every 5 ms).
 Each node keeps only a bounded FIFO cache — memory stays flat as links
 grow; a cold redirect costs one `GET`. No tailing — admin mutations work on
 any node. Live tests: `SHRT_KV_ADDR=127.0.0.1:6379 java -cp classes shrt.TestMain`.
+
+`STORE=rocksdb` keeps the corpus on local disk in an embedded RocksDB via
+rocksdbjni (CF `links`: `code` → `{exp}|{created}|{url}`; CF `hits`: u64
+counters via `UInt64AddOperator` merges — no read-modify-write). Expiry is
+enforced on read plus a `ROCKSDB_SWEEP_MS` iterator sweep (rocksdbjni has
+no compaction-filter API). Reads hit the same bounded FIFO cache first;
+bulk shorten is one `WriteBatch`. RocksDB holds an exclusive LOCK on the
+dir — one process per `ROCKSDB_PATH`; for multi-instance/multi-node use
+the RESP backend.
 
 ## Bench
 

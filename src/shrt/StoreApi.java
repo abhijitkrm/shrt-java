@@ -24,13 +24,21 @@ public interface StoreApi {
     void compact();
     void close();
 
-    /** STORE env dispatch: aof|local (default) | dragonfly|redis|kv.
-     *  DRAGONFLY_ADDR/KV_ADDR (default 127.0.0.1:6379), CACHE (100000),
-     *  CACHE_TTL_MS (5000 — staleness bound for cached entries). */
+    /** STORE env dispatch: aof|local (default) | dragonfly|redis|kv |
+     *  rocksdb|pebble. DRAGONFLY_ADDR/KV_ADDR (default 127.0.0.1:6379),
+     *  ROCKSDB_PATH (default {dir}/rocks — single-writer file lock),
+     *  CACHE (100000), CACHE_TTL_MS (5000 — staleness bound). */
     static StoreApi openEnv(String dir, int instance) throws IOException {
         String mode = System.getenv("STORE");
         if (mode == null) mode = "aof";
         switch (mode) {
+            case "rocksdb", "rocks", "pebble" -> {
+                String path = System.getenv("ROCKSDB_PATH");
+                if (path == null || path.isEmpty()) path = dir + "/rocks";
+                int cache = envInt("CACHE", 100000);
+                long ttl = envInt("CACHE_TTL_MS", 5000);
+                return new RocksStore(path, instance, cache, ttl);
+            }
             case "dragonfly", "redis", "kv" -> {
                 String addr = System.getenv("DRAGONFLY_ADDR");
                 if (addr == null || addr.isEmpty()) addr = System.getenv("KV_ADDR");
