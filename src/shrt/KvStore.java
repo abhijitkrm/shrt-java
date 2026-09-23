@@ -138,10 +138,11 @@ public final class KvStore implements StoreApi {
     private static String lkey(String c) { return "l:" + c; }
     private static String hkey(String c) { return "h:" + c; }
 
-    private static String enc(long e, long c, String u) { return e + "|" + c + "|" + u; }
+    // "v1|{e}|{c}|{u}" — legacy "{e}|{c}|{u}" and "{e}|{u}" decode with c=0
+    private static String enc(long e, long c, String u) { return "v1|" + e + "|" + c + "|" + u; }
 
-    // "{e}|{c}|{u}" — legacy "{e}|{u}" decodes with c=0
     private static long[] dec(String v) {
+        if (v.startsWith("v1|")) v = v.substring(3);
         int p = v.indexOf('|');
         if (p < 0) return null;
         try {
@@ -156,6 +157,7 @@ public final class KvStore implements StoreApi {
         }
     }
     private static String decUrl(String v) {
+        if (v.startsWith("v1|")) v = v.substring(3);
         int p = v.indexOf('|');
         if (p < 0) return null;
         String rest = v.substring(p + 1);
@@ -246,10 +248,13 @@ public final class KvStore implements StoreApi {
     @Override
     public String resolve(String code) {
         String u = cacheGet(code);
-        if (u != null) { bump(code); return u; }
+        if (u != null) { Metrics.cacheHit(); bump(code); return u; }
+        Metrics.cacheMiss();
+        long t0 = System.nanoTime();
         byte[] v;
         try { v = kvGet(code); }
         catch (IOException e) { return null; }
+        finally { Metrics.storeRead((System.nanoTime() - t0) / 1000); }
         if (v == null) return null;
         String vs = new String(v, java.nio.charset.StandardCharsets.UTF_8);
         long[] ec = dec(vs);
@@ -264,6 +269,7 @@ public final class KvStore implements StoreApi {
 
     @Override
     public String shorten(String url, String alias, long ttlMs) {
+        Metrics.storeWrite();
         long now = nowMs();
         long exp = ttlMs > 0 ? now + ttlMs : 0;
         try {
@@ -465,6 +471,15 @@ public final class KvStore implements StoreApi {
     }
 
     @Override
+    /** /api/health probe: RESP PING round-trip. */
+    public boolean healthy() {
+        try {
+            return "PONG".equals(kv.cmd("PING").text());
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
     public boolean isEmpty() {
         boolean[] any = {false};
         try { kv.scanEach("l:*", k -> any[0] = true); }

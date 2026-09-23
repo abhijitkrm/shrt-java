@@ -34,6 +34,22 @@ public final class KvTests {
     }
 
     public static void register() {
+        gated("kv_legacy_value_decode", s -> {
+            String lay = System.getenv("KV_LAYOUT");
+            if ("hash".equals(lay)) {
+                System.out.println("    (skip: KV_LAYOUT=hash)");
+                return;
+            }
+            Kv k = new Kv(System.getenv("SHRT_KV_ADDR"), 1);
+            k.set("l:legacy1", "0|https://one.example", 0, false);
+            k.set("l:legacy2", "0|0|https://two.example", 0, false);
+            T.checkEq(s.resolve("legacy1"), "https://one.example");
+            T.checkEq(s.resolve("legacy2"), "https://two.example");
+            s.shorten("https://v1.example", "v1check", 0);
+            String raw = new String(k.get("l:v1check"), java.nio.charset.StandardCharsets.UTF_8);
+            T.check(raw.startsWith("v1|"), "v1 tag: " + raw);
+        });
+
         gated("kv_shorten_resolve", s -> {
             T.checkEq(s.shorten("https://a.com", "gh", 0), "gh");
             T.checkEq(s.resolve("gh"), "https://a.com");

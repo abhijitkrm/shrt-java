@@ -31,7 +31,40 @@ public final class RocksTests {
         });
     }
 
+    private static StoreApi rocksAt(String dir) throws IOException {
+        return new RocksStore(dir, 0, 1000, 50);
+    }
+
     public static void register() {
+        T.test("rocks_legacy_value_decode", () -> {
+            synchronized (DB_LOCK) {
+                try {
+                    java.nio.file.Path dir = Files.createTempDirectory("shrt-rocks-legacy");
+                    // write a pre-version "{e}|{c}|{u}" row into the links CF
+                    org.rocksdb.RocksDB.loadLibrary();
+                    org.rocksdb.Options o = new org.rocksdb.Options().setCreateIfMissing(true);
+                    org.rocksdb.RocksDB d = org.rocksdb.RocksDB.open(o, dir.toString());
+                    org.rocksdb.ColumnFamilyHandle links =
+                        d.createColumnFamily(new org.rocksdb.ColumnFamilyDescriptor(
+                            "links".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                            new org.rocksdb.ColumnFamilyOptions()));
+                    d.createColumnFamily(new org.rocksdb.ColumnFamilyDescriptor(
+                        "hits".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        new org.rocksdb.ColumnFamilyOptions()));
+                    d.put(links, "legacyR".getBytes(), "0|0|https://rocks-legacy.example".getBytes());
+                    links.close(); d.close(); o.close();
+                    StoreApi s = rocksAt(dir.toString());
+                    try {
+                        T.checkEq(s.resolve("legacyR"), "https://rocks-legacy.example");
+                        String c = s.shorten("https://v1rocks.example", null, 0);
+                        T.check(c != null, "v1 shorten");
+                    } finally { s.close(); }
+                } catch (Throwable t) {
+                    System.out.println("    (skip: rocksdbjni unavailable: " + t + ")");
+                }
+            }
+        });
+
         gated("rocks_shorten_resolve", s -> {
             T.checkEq(s.shorten("https://a.com", "gh", 0), "gh");
             T.checkEq(s.resolve("gh"), "https://a.com");

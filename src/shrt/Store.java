@@ -410,6 +410,9 @@ public final class Store implements StoreApi {
         return urls.size();
     }
 
+    /** In-process engine is healthy whenever the process is. */
+    public boolean healthy() { return true; }
+
     public boolean isEmpty() { return data.isEmpty(); }
     public int instance() { return instance; }
     public boolean persistent() { return persistent; }

@@ -180,9 +180,10 @@ public final class RocksStore implements StoreApi {
     }
 
     private static byte[] enc(long e, long c, String u) {
-        return (e + "|" + c + "|" + u).getBytes(StandardCharsets.UTF_8);
+        return ("v1|" + e + "|" + c + "|" + u).getBytes(StandardCharsets.UTF_8);
     }
     private static long[] dec(String v) {
+        if (v.startsWith("v1|")) v = v.substring(3);
         int p = v.indexOf('|');
         if (p < 0) return null;
         try {
@@ -195,6 +196,7 @@ public final class RocksStore implements StoreApi {
         } catch (NumberFormatException ex) { return null; }
     }
     private static String decUrl(String v) {
+        if (v.startsWith("v1|")) v = v.substring(3);
         int p = v.indexOf('|');
         if (p < 0) return null;
         String rest = v.substring(p + 1);
@@ -301,9 +303,12 @@ public final class RocksStore implements StoreApi {
     @Override
     public String resolve(String code) {
         String u = cacheGet(code);
-        if (u != null) { bump(code); return u; }
+        if (u != null) { Metrics.cacheHit(); bump(code); return u; }
+        Metrics.cacheMiss();
+        long t0 = System.nanoTime();
         byte[] v;
         try { v = dbGet(code); } catch (RocksDBException e) { return null; }
+        finally { Metrics.storeRead((System.nanoTime() - t0) / 1000); }
         if (v == null) return null;
         String sv = new String(v, StandardCharsets.UTF_8);
         long[] ec = dec(sv);
@@ -317,6 +322,7 @@ public final class RocksStore implements StoreApi {
 
     @Override
     public String shorten(String url, String alias, long ttlMs) {
+        Metrics.storeWrite();
         long now = nowMs();
         long exp = ttlMs > 0 ? now + ttlMs : 0;
         try {
@@ -446,6 +452,16 @@ public final class RocksStore implements StoreApi {
     }
 
     @Override
+    /** /api/health probe: a point read proves the DB is open & readable. */
+    public boolean healthy() {
+        try {
+            db.get(new byte[]{0});
+            return true;
+        } catch (RocksDBException e) {
+            return false;
+        }
+    }
+
     public boolean isEmpty() {
         try (RocksIterator it = db.newIterator(links, ro)) {
             it.seekToFirst();

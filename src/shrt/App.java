@@ -258,6 +258,7 @@ public final class App {
             ttl = Math.min((long) tn.v(), linkTtlMs());
         }
         String code = st.shorten(us.v(), alias, ttl);
+        if (code != null) Metrics.linksDelta(1);
         if (code == null) return mk(409, "{\"error\":\"alias taken\"}");
         return mk(201, "{\"code\":\"" + code + "\",\"short_url\":\"/" + code + "\"}");
     }
@@ -274,6 +275,7 @@ public final class App {
 
     static Reply bulkReply(StoreApi st, List<String> us) {
         List<String> codes = st.shortenMany(us, linkTtlMs());
+        Metrics.linksDelta(codes.size());
         StringBuilder b = new StringBuilder(codes.size() * 10 + 24);
         b.append("{\"count\":").append(codes.size()).append(",\"codes\":[");
         for (int i = 0; i < codes.size(); i++) {
@@ -339,8 +341,17 @@ public final class App {
 
     // ---------- handler ----------
 
+    /** Transport-agnostic request handler. client = peer IP (or first
+     *  X-Forwarded-For under TRUST_PROXY) used for RATE_LIMIT accounting. */
     public static Reply handle(StoreApi st, String method, String path,
-                               String body, String adminToken) {
+                               String body, String adminToken, String client) {
+        Reply r = route(st, method, path, body, adminToken, client);
+        Metrics.status(r.status);
+        return r;
+    }
+
+    static Reply route(StoreApi st, String method, String path,
+                       String body, String adminToken, String client) {
         int qi = path.indexOf('?');
         String pathname = qi < 0 ? path : path.substring(0, qi);
         String query = qi < 0 ? "" : path.substring(qi + 1);
@@ -351,14 +362,29 @@ public final class App {
 
         if (method.equals("GET")) {
             switch (pathname) {
-                case "/api/health" -> { return mk(200, "{\"ok\":true}"); }
-                case "/api/metrics" -> { return mk(200, Metrics.snapshot()); }
+                case "/api/health" -> {
+                    Metrics.op(Metrics.OP_HEALTH);
+                    return st.healthy() ? mk(200, "{\"ok\":true}")
+                                        : mk(503, "{\"ok\":false}");
+                }
+                case "/api/metrics" -> {
+                    Metrics.op(Metrics.OP_METRICS);
+                    return mk(200, Metrics.snapshot());
+                }
+                case "/metrics" -> {
+                    Metrics.op(Metrics.OP_METRICS);
+                    return new Reply(200, null,
+                        Metrics.prometheus(RateLimit.LIMITED.sum()),
+                        "text/plain; version=0.0.4");
+                }
                 case "/" -> {
+                    Metrics.op(Metrics.OP_UI);
                     String html = uiHtml();
                     if (html.isEmpty()) return notFound();
                     return new Reply(200, null, html, "text/html; charset=utf-8");
                 }
                 case "/api/links" -> {
+                    Metrics.op(Metrics.OP_LIST);
                     var pq = parseQuery(query);
                     long limit = 50;
                     String ls = pq.get("limit");
@@ -387,6 +413,7 @@ public final class App {
                 }
                 default -> {
                     if (pathname.startsWith("/api/stats/")) {
+                        Metrics.op(Metrics.OP_STATS);
                         var link = st.stats(pathname.substring(11));
                         if (link == null) return notFound();
                         StringBuilder b = new StringBuilder(128);
@@ -395,6 +422,7 @@ public final class App {
                     }
                     String code = pathname.substring(1);
                     if (codeOk(code)) {
+                        Metrics.op(Metrics.OP_REDIRECT);
                         String target = st.resolve(code);
                         if (target != null) return new Reply(302, target, "", null);
                     }
@@ -404,19 +432,35 @@ public final class App {
         }
 
         if (method.equals("POST")) {
-            if (!pathname.equals("/api/shorten") && !pathname.equals("/api/shorten/bulk"))
+            if (!pathname.equals("/api/shorten") && !pathname.equals("/api/shorten/bulk")) {
+                Metrics.op(Metrics.OP_OTHER);
                 return notFound();
+            }
             if (pathname.equals("/api/shorten/bulk")) {
                 List<String> us = tryBulkUrls(body);
                 if (us != null) {
                     String msg = "urls must be 1-" + MAX_BULK_URLS + " valid http(s) urls";
                     if (us.isEmpty() || us.size() > MAX_BULK_URLS) return bad(msg);
                     for (String u : us) if (!okBulkUrl(u)) return bad(msg);
+                    if (!RateLimit.global().allow(client, Math.max(1, us.size()))) {
+                        RateLimit.LIMITED.increment();
+                        Metrics.op(Metrics.OP_OTHER);
+                        return mk(429, "{\"error\":\"rate limited\"}");
+                    }
+                    Metrics.op(Metrics.OP_BULK);
                     return bulkReply(st, us);
                 }
             }
             J pj = parseJson(body);
             if (!(pj instanceof J.Obj p)) return bad("invalid json");
+            if (pathname.equals("/api/shorten")
+                    && !RateLimit.global().allow(client, 1)) {
+                RateLimit.LIMITED.increment();
+                Metrics.op(Metrics.OP_OTHER);
+                return mk(429, "{\"error\":\"rate limited\"}");
+            }
+            Metrics.op(pathname.equals("/api/shorten") ? Metrics.OP_SHORTEN
+                                                       : Metrics.OP_BULK);
             return pathname.equals("/api/shorten") ? shortenOne(st, p) : shortenBulk(st, p);
         }
 
@@ -426,7 +470,10 @@ public final class App {
             String code = pathname.substring(11);
             if (!codeOk(code)) return bad("invalid code");
             if (method.equals("DELETE")) {
-                return switch (st.remove(code)) {
+                Metrics.op(Metrics.OP_DELETE);
+                var rm = st.remove(code);
+                if (rm == Store.MutResult.OK) Metrics.linksDelta(-1);
+                return switch (rm) {
                     case OK -> new Reply(204, null, "", null);
                     case MISSING -> notFound();
                     case REMOTE -> mk(409, "{\"error\":\"owned by another instance\"}");
@@ -442,6 +489,7 @@ public final class App {
                     ttl = Math.min((long) t.v(), linkTtlMs());
                     hasTtl = true;
                 }
+                Metrics.op(Metrics.OP_UPDATE);
                 return switch (st.update(code, u.v(), ttl, hasTtl)) {
                     case OK -> mk(200, "{\"ok\":true}");
                     case MISSING -> notFound();

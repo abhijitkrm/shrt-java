@@ -21,7 +21,16 @@ public final class ServerJdk {
                 if (q != null) path += "?" + q;
                 String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 String admin = ex.getRequestHeaders().getFirst("x-admin-token");
-                App.Reply r = App.handle(st, method, path, body, admin != null ? admin : "");
+                String client = ex.getRemoteAddress() != null
+                        && ex.getRemoteAddress().getAddress() != null
+                        ? ex.getRemoteAddress().getAddress().getHostAddress() : "";
+                String xff = ex.getRequestHeaders().getFirst("x-forwarded-for");
+                if (System.getenv("TRUST_PROXY") != null && xff != null && !xff.isEmpty()) {
+                    int ci = xff.indexOf(',');
+                    String f = (ci < 0 ? xff : xff.substring(0, ci)).trim();
+                    if (!f.isEmpty()) client = f;
+                }
+                App.Reply r = App.handle(st, method, path, body, admin != null ? admin : "", client);
                 ex.getResponseHeaders().set("content-type",
                     r.ctype != null ? r.ctype : "application/json");
                 if (r.location != null) ex.getResponseHeaders().set("location", r.location);

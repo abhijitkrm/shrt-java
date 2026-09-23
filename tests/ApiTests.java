@@ -261,6 +261,33 @@ public final class ApiTests {
             T.checkEq(d.status(), 404);
         });
 
+        both("prometheus_metrics", port -> {
+            postJson(port, "/api/shorten", "{\"url\":\"https://prom.example\"}");
+            Resp r = get(port, "/metrics");
+            T.checkEq(r.status(), 200);
+            T.checkEq(r.headers().get("content-type"), "text/plain; version=0.0.4");
+            T.check(r.body().contains("# TYPE shrt_requests_total counter"), "TYPE line");
+            T.check(r.body().contains("shrt_requests_total{op=\"shorten\"}"), "op series");
+            T.check(r.body().contains("shrt_links_total"), "links_total");
+            T.check(r.body().contains("shrt_uptime_seconds"), "uptime");
+            T.check(r.body().contains("shrt_rate_limited_total"), "rate_limited");
+        });
+
+        both("rate_limit_per_ip", port -> {
+            RateLimit.initForTest(1, 4);
+            int last = 0, oks = 0;
+            for (int i = 0; i < 10; i++) {
+                last = postJson(port, "/api/shorten",
+                    "{\"url\":\"https://rl.example\"}").status();
+                if (last == 201) { oks++; continue; }
+                break;
+            }
+            T.checkEq(last, 429);
+            T.check(oks <= 4, "oks=" + oks);
+            T.checkEq(get(port, "/nope").status(), 404); // reads not limited
+            RateLimit.reloadForTest();
+        });
+
         both("delete_removes_and_frees_alias", port -> {
             // needs ADMIN_TOKEN — spawn suite server with env set? env is process-wide;
             // use a dedicated in-process check: set env via reflection is fragile.

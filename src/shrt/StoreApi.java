@@ -17,6 +17,8 @@ public interface StoreApi {
     Store.Link stats(String code);
     int seed(List<String> urls);
     boolean isEmpty();
+    /** /api/health probe — RESP PING / rocksdb point read / true for aof. */
+    boolean healthy();
     int instance();
     boolean persistent();
     void pollTailsNow();

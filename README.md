@@ -51,14 +51,19 @@ SERVER=jdk java -cp classes shrt.Main  # JDK HttpServer frontend
 | `/api/stats/:code` | GET | `{"code","url","hits","created_at","expires_at"}` |
 | `/api/links` | GET | `?limit&offset&sort=hits|created&q` (admin list) |
 | `/api/links/:code` | PATCH/DELETE | requires `ADMIN_TOKEN` + `x-admin-token` header |
-| `/api/health` `/api/metrics` | GET | health / request counters |
+| `/api/health` | GET | 200 only when the store answers (RESP `PING` / rocksdb probe) — else 503 |
+| `/api/metrics` `/metrics` | GET | JSON counters / Prometheus text exposition |
 | `/` | GET | built-in UI (`ui/index.html`) |
 
 ## Config (env)
 
 `PORT` (3000) · `DATA_DIR` (`data`) · `WORKERS` (1) · `SERVER` (`mini`|`jdk`)
 · `INSTANCE` (auto) · `SEED` (pre-generate N links at boot) · `HITS` (`1`)
-· `TAIL_MS` (0) · `ADMIN_TOKEN` · `CORS_ORIGIN` (`*`)
+· `TAIL_MS` (0) · `ADMIN_TOKEN` (unset/empty = PATCH/DELETE always 404, fail-closed) · `CORS_ORIGIN` (`*`)
+· `RATE_LIMIT` (0=off) — per-IP token bucket req/s on `POST /api/shorten`
+  (cost 1) and `/api/shorten/bulk` (cost = url count); 429 when empty.
+  `RATE_LIMIT_BURST` (default = RATE_LIMIT) sets capacity; `TRUST_PROXY`
+  switches the key to the first `X-Forwarded-For` address
 · `LINK_TTL_MS` (86400000, default AND cap)
 · `STORE` (`aof`|`dragonfly`|`redis`|`rocksdb`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
 · `ROCKSDB_PATH` (`{DATA_DIR}/rocks`) — embedded RocksDB dir; needs

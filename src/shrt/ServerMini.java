@@ -52,6 +52,8 @@ public final class ServerMini {
 
     /** One connection: read batches -> process all complete requests -> one write. */
     static void connLoop(Socket s, StoreApi st, String corsOrigin) throws IOException {
+        String peer = s.getInetAddress() != null ? s.getInetAddress().getHostAddress() : "";
+        boolean trustProxy = System.getenv("TRUST_PROXY") != null;
         s.setTcpNoDelay(true);
         InputStream in = s.getInputStream();
         OutputStream sout = s.getOutputStream();
@@ -84,6 +86,7 @@ public final class ServerMini {
                     int cl = 0;
                     boolean keepAlive = true, kaSet = false;
                     String adminToken = "";
+                    String xff = null;
                     int hp = rl < 0 ? he : rl + 2;
                     while (hp < he) {
                         int e = indexOf(buf, hp, he, "\r\n");
@@ -96,6 +99,7 @@ public final class ServerMini {
                                 case "content-length" -> { try { cl = Integer.parseInt(hv); } catch (NumberFormatException ignored) {} }
                                 case "connection" -> { keepAlive = !hv.equalsIgnoreCase("close"); kaSet = true; }
                                 case "x-admin-token" -> adminToken = hv;
+                                case "x-forwarded-for" -> xff = hv;
                             }
                         }
                         hp = e + 2;
@@ -110,7 +114,13 @@ public final class ServerMini {
                         return;
                     }
                     String body = new String(buf, he + 4, cl, StandardCharsets.UTF_8);
-                    App.Reply r = App.handle(st, method, path, body, adminToken);
+                    String client = peer;
+                    if (trustProxy && xff != null && !xff.isEmpty()) {
+                        int ci = xff.indexOf(',');
+                        String f = (ci < 0 ? xff : xff.substring(0, ci)).trim();
+                        if (!f.isEmpty()) client = f;
+                    }
+                    App.Reply r = App.handle(st, method, path, body, adminToken, client);
                     boolean ka = kaSet ? keepAlive : true;
                     writeReply(out, r, true, corsOrigin, ka);
                     parsed = total;
