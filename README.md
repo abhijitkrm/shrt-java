@@ -62,6 +62,8 @@ SERVER=jdk java -cp classes shrt.Main  # JDK HttpServer frontend
 · `LINK_TTL_MS` (86400000, default AND cap)
 · `STORE` (`aof`|`dragonfly`|`redis`) · `DRAGONFLY_ADDR` (`127.0.0.1:6379`)
 · `CACHE` (100000, bounded hot FIFO entries) · `CACHE_TTL_MS` (5000)
+`KV_LAYOUT` (`key`|`hash`) packs links as hash fields in `l:{code % KV_BUCKETS}` (~40% less KV memory); expiry via read-check + `KV_SWEEP_MS` janitor (1h). Server needs `hash-max-listpack-value` >= ~256 for full savings.
+
 
 `STORE=dragonfly` moves the whole corpus to an external RESP store
 (DragonflyDB / Redis): keys `l:{code}` → `{exp}|{created}|{url}` (PX

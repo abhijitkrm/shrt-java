@@ -36,6 +36,9 @@ public final class KvStore implements StoreApi {
     private final Map<String, Long>[] dirty = new Map[SHARDS];
     private volatile boolean stop;
     private final Thread flusher;
+    private final Thread janitor;
+    private final boolean layoutHash;  // KV_LAYOUT=hash
+    private final long buckets;        // KV_BUCKETS
     private final java.util.concurrent.ThreadLocalRandom rng = null;
 
     private static final class CacheEntry {
@@ -66,6 +69,59 @@ public final class KvStore implements StoreApi {
         }, "kv-flush");
         flusher.setDaemon(true);
         flusher.start();
+        layoutHash = "hash".equals(System.getenv("KV_LAYOUT"));
+        long b = 1_000_000;
+        String bv = System.getenv("KV_BUCKETS");
+        if (bv != null) try { b = Math.max(1, Long.parseLong(bv)); } catch (NumberFormatException ignored) {}
+        buckets = b;
+        long sweepMs = 3_600_000;
+        String sv = System.getenv("KV_SWEEP_MS");
+        if (sv != null) try { sweepMs = Math.max(50, Long.parseLong(sv)); } catch (NumberFormatException ignored) {}
+        if (layoutHash) {
+            long sm = sweepMs;
+            janitor = new Thread(() -> {
+                long waited = 0;
+                while (!stop) {
+                    try { Thread.sleep(50); } catch (InterruptedException ie) { return; }
+                    waited += 50;
+                    if (waited >= sm) {
+                        waited = 0;
+                        try { sweepExpired(); } catch (IOException ignored) {}
+                    }
+                }
+            }, "kv-janitor");
+            janitor.setDaemon(true);
+            janitor.start();
+        } else {
+            janitor = null;
+        }
+    }
+
+    private String bkey(String code) {
+        return "l:" + ((shardOf(code) & 0xFFFFFFFFL) % buckets);
+    }
+    private static String hfield(String c) { return "h:" + c; }
+
+    private byte[] kvGet(String code) throws IOException {
+        return layoutHash ? kv.hget(bkey(code), code) : kv.get(lkey(code));
+    }
+
+    // janitor: HDEL fields whose embedded expiry has passed (no PX on fields)
+    private void sweepExpired() throws IOException {
+        List<String> bucketList = new ArrayList<>();
+        kv.scanEach("l:*", bucketList::add);
+        long now = nowMs();
+        List<String[]> dels = new ArrayList<>();
+        for (String b : bucketList) {
+            List<String> dead = new ArrayList<>();
+            kv.hscanEach(b, (f, v) -> {
+                if (f.startsWith("h:")) return;
+                long[] ec = dec(v);
+                if (ec != null && ec[0] != 0 && ec[0] <= now) dead.add(f);
+            });
+            for (String f : dead) dels.add(new String[]{"HDEL", b, f});
+        }
+        if (!dels.isEmpty()) kv.pipe(dels);
     }
 
     private static long nowMs() { return System.currentTimeMillis(); }
@@ -108,6 +164,19 @@ public final class KvStore implements StoreApi {
     }
 
     private void flushHits() throws IOException {
+        if (layoutHash) {
+            List<String[]> deltas = new ArrayList<>();
+            for (int i = 0; i < SHARDS; i++) {
+                synchronized (dirtyLocks[i]) {
+                    for (var e : dirty[i].entrySet())
+                        deltas.add(new String[]{bkey(e.getKey()), hfield(e.getKey()),
+                                                Long.toString(e.getValue())});
+                    dirty[i].clear();
+                }
+            }
+            kv.hincrbyMany(deltas);
+            return;
+        }
         List<String[]> deltas = new ArrayList<>();
         for (int i = 0; i < SHARDS; i++) {
             synchronized (dirtyLocks[i]) {
@@ -179,7 +248,7 @@ public final class KvStore implements StoreApi {
         String u = cacheGet(code);
         if (u != null) { bump(code); return u; }
         byte[] v;
-        try { v = kv.get(lkey(code)); }
+        try { v = kvGet(code); }
         catch (IOException e) { return null; }
         if (v == null) return null;
         String vs = new String(v, java.nio.charset.StandardCharsets.UTF_8);
@@ -199,11 +268,16 @@ public final class KvStore implements StoreApi {
         long exp = ttlMs > 0 ? now + ttlMs : 0;
         try {
             if (alias != null) {
-                return kv.set(lkey(alias), enc(exp, now, url), ttlMs, true) ? alias : null;
+                return (layoutHash
+                        ? kv.hsetnx(bkey(alias), alias, enc(exp, now, url))
+                        : kv.set(lkey(alias), enc(exp, now, url), ttlMs, true)) ? alias : null;
             }
             for (;;) {
                 String c = genCode();
-                if (kv.set(lkey(c), enc(exp, now, url), ttlMs, true)) return c;
+                boolean ok = layoutHash
+                        ? kv.hsetnx(bkey(c), c, enc(exp, now, url))
+                        : kv.set(lkey(c), enc(exp, now, url), ttlMs, true);
+                if (ok) return c;
             }
         } catch (IOException e) {
             return null;
@@ -219,16 +293,22 @@ public final class KvStore implements StoreApi {
         for (String u : urls) {
             String c = genCode();
             codes.add(c);
-            List<String> a = new ArrayList<>(List.of("SET", lkey(c), enc(exp, now, u)));
-            if (ttlMs > 0) { a.add("PX"); a.add(Long.toString(ttlMs)); }
-            a.add("NX");
-            cmds.add(a.toArray(new String[0]));
+            if (layoutHash) {
+                cmds.add(new String[]{"HSETNX", bkey(c), c, enc(exp, now, u)});
+            } else {
+                List<String> a = new ArrayList<>(List.of("SET", lkey(c), enc(exp, now, u)));
+                if (ttlMs > 0) { a.add("PX"); a.add(Long.toString(ttlMs)); }
+                a.add("NX");
+                cmds.add(a.toArray(new String[0]));
+            }
         }
         List<Kv.Resp> rs;
         try { rs = kv.pipe(cmds); }
         catch (IOException e) { rs = List.of(); }
         for (int i = 0; i < urls.size(); i++) {
-            boolean ok = i < rs.size() && rs.get(i).kind == '+' && "OK".equals(rs.get(i).text());
+            boolean ok = layoutHash
+                ? (i < rs.size() && rs.get(i).kind == ':' && rs.get(i).num == 1)
+                : (i < rs.size() && rs.get(i).kind == '+' && "OK".equals(rs.get(i).text()));
             if (!ok) {
                 String c2 = shorten(urls.get(i), null, ttlMs);
                 if (c2 != null) codes.set(i, c2);
@@ -240,17 +320,21 @@ public final class KvStore implements StoreApi {
     @Override
     public Store.MutResult update(String code, String url, long ttlMs, boolean hasTtl) {
         byte[] v;
-        try { v = kv.get(lkey(code)); }
+        try { v = kvGet(code); }
         catch (IOException e) { return Store.MutResult.MISSING; }
         if (v == null) return Store.MutResult.MISSING;
         String vs = new String(v, java.nio.charset.StandardCharsets.UTF_8);
         long[] ec = dec(vs);
         if (ec == null) return Store.MutResult.MISSING;
         long exp = hasTtl ? (ttlMs > 0 ? nowMs() + ttlMs : 0) : ec[0];
-        long px = exp > 0 ? exp - nowMs() : 0;
         try {
-            if (!kv.set(lkey(code), enc(exp, ec[1], url), px, false))
-                return Store.MutResult.MISSING;
+            if (layoutHash) {
+                kv.hset(bkey(code), code, enc(exp, ec[1], url));
+            } else {
+                long px = exp > 0 ? exp - nowMs() : 0;
+                if (!kv.set(lkey(code), enc(exp, ec[1], url), px, false))
+                    return Store.MutResult.MISSING;
+            }
         } catch (IOException e) {
             return Store.MutResult.MISSING;
         }
@@ -260,11 +344,20 @@ public final class KvStore implements StoreApi {
 
     @Override
     public Store.MutResult remove(String code) {
-        long n;
-        try { n = kv.del(lkey(code)); }
-        catch (IOException e) { return Store.MutResult.MISSING; }
-        if (n <= 0) return Store.MutResult.MISSING;
-        try { kv.del(hkey(code)); } catch (IOException ignored) {}
+        if (layoutHash) {
+            String b = bkey(code);
+            long n;
+            try { n = kv.hdel(b, code); }
+            catch (IOException e) { return Store.MutResult.MISSING; }
+            if (n <= 0) return Store.MutResult.MISSING;
+            try { kv.hdel(b, hfield(code)); } catch (IOException ignored) {}
+        } else {
+            long n;
+            try { n = kv.del(lkey(code)); }
+            catch (IOException e) { return Store.MutResult.MISSING; }
+            if (n <= 0) return Store.MutResult.MISSING;
+            try { kv.del(hkey(code)); } catch (IOException ignored) {}
+        }
         cacheDel(code);
         return Store.MutResult.OK;
     }
@@ -274,6 +367,41 @@ public final class KvStore implements StoreApi {
         List<String> keys = new ArrayList<>();
         try { kv.scanEach("l:*", keys::add); }
         catch (IOException e) { return new Store.Pair<>(List.of(), 0); }
+        if (layoutHash) {
+            Map<String, Long> hits = new HashMap<>();
+            List<String[]> rows = new ArrayList<>(); // {code, url, e, c}
+            long now = nowMs();
+            for (String b : keys) {
+                try {
+                    kv.hscanEach(b, (f, v) -> {
+                        if (f.startsWith("h:")) {
+                            try { hits.put(f.substring(2), Long.parseLong(v)); }
+                            catch (NumberFormatException ignored) {}
+                            return;
+                        }
+                        long[] ec = dec(v);
+                        String u = decUrl(v);
+                        if (ec == null || u == null) return;
+                        if (ec[0] != 0 && ec[0] <= now) return;
+                        if (!q.isEmpty() && !f.contains(q) && !u.contains(q)) return;
+                        rows.add(new String[]{f, u, Long.toString(ec[0]), Long.toString(ec[1])});
+                    });
+                } catch (IOException ignored) {}
+            }
+            List<Store.Link> items = new ArrayList<>(rows.size());
+            for (String[] r : rows) {
+                long e = Long.parseLong(r[2]);
+                items.add(new Store.Link(r[0], r[1],
+                        hits.getOrDefault(r[0], 0L),
+                        Long.parseLong(r[3]), e != 0 ? e : null));
+            }
+            if ("hits".equals(sort))
+                items.sort(Comparator.comparingLong(Store.Link::hits).reversed());
+            int total = items.size();
+            if (offset > total) offset = total;
+            int end = Math.min(total, offset + limit);
+            return new Store.Pair<>(items.subList(offset, end), total);
+        }
         List<String[]> cmds = new ArrayList<>(keys.size() * 2);
         for (String k : keys) {
             cmds.add(new String[]{"GET", k});
@@ -309,7 +437,7 @@ public final class KvStore implements StoreApi {
     @Override
     public Store.Link stats(String code) {
         byte[] v;
-        try { v = kv.get(lkey(code)); }
+        try { v = kvGet(code); }
         catch (IOException e) { return null; }
         if (v == null) return null;
         String vs = new String(v, java.nio.charset.StandardCharsets.UTF_8);
@@ -318,7 +446,7 @@ public final class KvStore implements StoreApi {
         if (ec == null || u == null) return null;
         long hits = 0;
         try {
-            byte[] hv = kv.get(hkey(code));
+            byte[] hv = layoutHash ? kv.hget(bkey(code), hfield(code)) : kv.get(hkey(code));
             if (hv != null)
                 hits = Long.parseLong(new String(hv, java.nio.charset.StandardCharsets.UTF_8));
         } catch (IOException | NumberFormatException ignored) {}

@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.function.BiConsumer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -165,6 +166,37 @@ public final class Kv {
 
     public long del(String key) throws IOException {
         return cmd("DEL", key).num;
+    }
+
+    public byte[] hget(String key, String field) throws IOException {
+        Resp r = cmd("HGET", key, field);
+        return r.str;
+    }
+    public boolean hsetnx(String key, String field, String val) throws IOException {
+        return cmd("HSETNX", key, field, val).num == 1;
+    }
+    public void hset(String key, String field, String val) throws IOException {
+        cmd("HSET", key, field, val);
+    }
+    public long hdel(String key, String field) throws IOException {
+        return cmd("HDEL", key, field).num;
+    }
+    public void hincrbyMany(List<String[]> deltas) throws IOException {
+        if (deltas.isEmpty()) return;
+        List<String[]> cmds = new ArrayList<>(deltas.size());
+        for (String[] d : deltas) cmds.add(new String[]{"HINCRBY", d[0], d[1], d[2]});
+        pipe(cmds);
+    }
+    public void hscanEach(String key, BiConsumer<String, String> cb) throws IOException {
+        String cursor = "0";
+        do {
+            Resp r = cmd("HSCAN", key, cursor, "COUNT", "1000");
+            if (r.arr == null || r.arr.size() != 2) return;
+            cursor = r.arr.get(0).text();
+            List<Resp> items = r.arr.get(1).arr;
+            for (int i = 0; i + 1 < items.size(); i += 2)
+                cb.accept(items.get(i).text(), items.get(i + 1).text());
+        } while (!"0".equals(cursor));
     }
 
     public void incrbyMany(List<String[]> deltas) throws IOException {
